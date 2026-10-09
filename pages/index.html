@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Passdown Outlook Test</title>
+<!-- The add-in's first page. It holds no tokens and no data: it signs the user
+     in through a pop-up, gets the settings back, and runs the checks. -->
+<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+<style>
+  :root { --bg: #ffffff; --fg: #1d2733; --muted: #5b6672; --ok: #1a7f37; --bad: #c62828; --warn: #9a6700; --line: #d8dee4; --accent: #005ea0; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1f24; --fg: #e6edf3; --muted: #9aa5b1; --ok: #3fb950; --bad: #f47067; --warn: #d4a72c; --line: #30363d; --accent: #4aa3df; }
+  }
+  body { margin: 0; padding: 12px; background: var(--bg); color: var(--fg); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  p { margin: 0 0 12px; color: var(--muted); }
+  ul { list-style: none; padding: 0; margin: 0 0 12px; }
+  li { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .ok::before { content: "✓ "; color: var(--ok); font-weight: 600; }
+  .bad::before { content: "✗ "; color: var(--bad); font-weight: 600; }
+  .warn::before { content: "• "; color: var(--warn); font-weight: 600; }
+  .detail { display: block; color: var(--muted); font-size: 12px; word-break: break-word; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 4px; padding: 8px 12px; font: inherit; cursor: pointer; margin: 0 8px 8px 0; }
+  button:disabled { opacity: .5; cursor: default; }
+  textarea { width: 100%; box-sizing: border-box; height: 140px; font: 12px/1.3 Consolas, monospace; background: var(--bg); color: var(--fg); border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<h1>Passdown add-in test 3</h1>
+<p>Sign in through a pop-up, then test filling an email. Nothing is sent.</p>
+<ul id="results"><li class="ok">The launcher loaded inside Outlook</li></ul>
+<button id="signin" disabled>Sign in</button>
+<button id="fill" disabled>Fill this email with a test passdown</button>
+<button id="copy">Copy results</button>
+<textarea id="log" readonly></textarea>
+
+<script>
+"use strict";
+var TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAD0lEQVR4nGNgiFuAQMRxAJMDD+FlcIuxAAAAAElFTkSuQmCC";
+var lines = ["PASS Launcher loaded", "INFO Browser | " + navigator.userAgent];
+var compose = false;
+
+function add(state, title, detail) {
+  var li = document.createElement("li");
+  li.className = state;
+  li.textContent = title;
+  if (detail) {
+    var span = document.createElement("span");
+    span.className = "detail";
+    span.textContent = detail;
+    li.appendChild(span);
+  }
+  document.getElementById("results").appendChild(li);
+  lines.push((state === "ok" ? "PASS " : state === "bad" ? "FAIL " : "INFO ") + title + (detail ? " | " + detail : ""));
+  document.getElementById("log").value = lines.join("\n");
+}
+
+function officeCall(fn) {
+  return new Promise(function (resolve, reject) {
+    fn(function (result) {
+      if (result.status === Office.AsyncResultStatus.Succeeded) resolve(result.value);
+      else reject(new Error(result.error ? result.error.message : "failed"));
+    });
+  });
+}
+
+function officeChecks() {
+  var diag = Office.context.diagnostics || {};
+  add("ok", "Outlook connected", (diag.host || "?") + ", " + (diag.platform || "?") + ", version " + (diag.version || "?"));
+  var highest = "none";
+  for (var minor = 1; minor <= 15; minor++) {
+    if (Office.context.requirements.isSetSupported("Mailbox", "1." + minor)) highest = "1." + minor;
+  }
+  add(Office.context.requirements.isSetSupported("Mailbox", "1.8") ? "ok" : "bad",
+    "Mail features supported up to " + highest, "1.8 or newer is needed to attach the PDF");
+  var crossDomain = Office.context.requirements.isSetSupported("DialogOrigin", "1.1");
+  add(crossDomain ? "ok" : "warn", crossDomain ? "Pop-up can hand back settings" : "Pop-up hand-back may not be supported",
+    "DialogOrigin 1.1 " + (crossDomain ? "supported" : "not reported"));
+  var item = Office.context.mailbox.item;
+  compose = !!(item && typeof item.body.setAsync === "function");
+  add(compose ? "ok" : "warn", compose ? "Opened on a new email" : "Opened on a received email",
+    compose ? "" : "Open the add-in from a new email to test filling it in");
+  document.getElementById("signin").disabled = false;
+}
+
+function signIn() {
+  document.getElementById("signin").disabled = true;
+  var url = new URL("dialog-start.html", location.href).href;
+  Office.context.ui.displayDialogAsync(url, { height: 60, width: 30, promptBeforeOpen: false }, function (result) {
+    if (result.status !== Office.AsyncResultStatus.Succeeded) {
+      add("bad", "Could not open the sign-in pop-up", result.error ? result.error.message : "");
+      document.getElementById("signin").disabled = false;
+      return;
+    }
+    var dialog = result.value;
+    add("ok", "Sign-in pop-up opened");
+    dialog.addEventHandler(Office.EventType.DialogMessageReceived, function (arg) {
+      dialog.close();
+      var reply;
+      try { reply = JSON.parse(arg.message); } catch (e) { reply = { ok: false, error: "unreadable reply" }; }
+      if (!reply.ok) { add("bad", "Sign-in did not return settings", reply.error); document.getElementById("signin").disabled = false; return; }
+      // Only key names are shown, never the tokens.
+      add("ok", "Signed in and received the settings", "from " + (arg.origin || "?") + ", keys: " + Object.keys(reply.settings).join(", "));
+      releaseCheck(reply.settings).then(function () { document.getElementById("fill").disabled = !compose; });
+    });
+    dialog.addEventHandler(Office.EventType.DialogEventReceived, function (arg) {
+      add("warn", "Pop-up closed before finishing", "code " + arg.error);
+      document.getElementById("signin").disabled = false;
+    });
+  });
+}
+
+async function releaseCheck(settings) {
+  if (!settings.token || (settings.provider || "github") !== "github") { add("warn", "Skipped the release check"); return; }
+  var root = (settings.releaseRoot || "").replace(/^\/+|\/+$/g, "");
+  var url = "https://api.github.com/repos/" + settings.project + "/contents/" + (root ? root + "/" : "") +
+    "current.json?ref=" + encodeURIComponent(settings.branch || "master");
+  try {
+    var res = await fetch(url, { headers: { Authorization: "Bearer " + settings.token, Accept: "application/vnd.github.raw+json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    var current = await res.json();
+    add("ok", "Reached the live release", "current release " + (current.version || "?"));
+  } catch (err) {
+    add("bad", "Could not reach the live release", err.message);
+  }
+}
+
+async function fillTestEmail() {
+  var item = Office.context.mailbox.item;
+  var me = Office.context.mailbox.userProfile.emailAddress;
+  document.getElementById("fill").disabled = true;
+  var steps = [
+    ["Filled To with your own address", function () { return officeCall(function (cb) { item.to.setAsync([me], cb); }); }],
+    ["Filled the subject", function () { return officeCall(function (cb) { item.subject.setAsync("Passdown add-in test", cb); }); }],
+    ["Added an inline logo", function () { return officeCall(function (cb) { item.addFileAttachmentFromBase64Async(TINY_PNG, "logo.png", { isInline: true }, cb); }); }],
+    ["Filled the formatted body", function () {
+      var html = '<p><img src="cid:logo.png" width="40" height="40" alt="logo"></p>' +
+        '<h2 style="color:#005ea0">Passdown add-in test</h2>' +
+        '<table border="1" cellpadding="6" style="border-collapse:collapse"><tr><th>Tool</th><th>Status</th></tr>' +
+        '<tr><td>Test tool</td><td style="color:#1a7f37">Up</td></tr></table>' +
+        // Hidden history record for the SharePoint flow; must not show to the customer.
+        '<div style="display:none;mso-hide:all;max-height:0;overflow:hidden">PASSDOWN-DATA:' +
+        btoa(unescape(encodeURIComponent(JSON.stringify({ schemaVersion: 1, test: true, note: "Passdown add-in test record" })))) +
+        ':END</div>';
+      return officeCall(function (cb) { item.body.setAsync(html, { coercionType: Office.CoercionType.Html }, cb); });
+    }],
+    ["Attached a test file", function () {
+      return officeCall(function (cb) { item.addFileAttachmentFromBase64Async(btoa("Passdown add-in test attachment"), "passdown-test.txt", cb); });
+    }]
+  ];
+  for (var i = 0; i < steps.length; i++) {
+    try { await steps[i][1](); add("ok", steps[i][0]); }
+    catch (err) { add("bad", "Failed: " + steps[i][0].toLowerCase(), err.message); }
+  }
+  add("warn", "Send it to yourself, then check the received email",
+    "The text PASSDOWN-DATA must not be visible, including in the plain-text version");
+}
+
+document.getElementById("signin").addEventListener("click", signIn);
+document.getElementById("fill").addEventListener("click", fillTestEmail);
+document.getElementById("copy").addEventListener("click", function () {
+  var box = document.getElementById("log");
+  box.select();
+  try { document.execCommand("copy"); } catch (e) { /* the text stays selected */ }
+});
+
+var officeSeen = false;
+document.getElementById("log").value = lines.join("\n");
+if (window.Office) {
+  Office.onReady(function () { officeSeen = true; try { officeChecks(); } catch (err) { add("bad", "Outlook connection failed", err.message); } });
+}
+setTimeout(function () { if (!officeSeen) add("bad", "Outlook did not connect to the page", "Office.js did not start within 10 seconds"); }, 10000);
+</script>
+</body>
+</html>
