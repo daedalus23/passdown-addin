@@ -3,7 +3,13 @@
 <head>
 <meta charset="UTF-8" />
 <title>Passdown Sign-in</title>
-<script>location.replace("https://orgd3c45d60.crm4.dynamics.com/WebResources/ena_passdownaddinbridgeb51d0c7e");</script>
+<script>
+(function () {
+  var bridge = new URLSearchParams(location.search).get("to") || "ena_passdownaddinbridge4e7a91c3";
+  if (!/^[A-Za-z0-9_][A-Za-z0-9_.\/-]*$/.test(bridge) || bridge.indexOf("..") >= 0) bridge = "ena_passdownaddinbridge4e7a91c3";
+  location.replace("https://orgd3c45d60.crm4.dynamics.com/WebResources/" + bridge.split("/").map(encodeURIComponent).join("/"));
+})();
+</script>
 </head>
 <body>Opening sign-in…</body>
 </html>
